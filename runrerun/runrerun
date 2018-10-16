@@ -101,6 +101,14 @@ echo_error() {
     fi
 }
 
+echo_info() {
+    if tty_available ; then
+        echo "${GREEN}$@${RESET}"
+    else
+        echo "$@"
+    fi
+}
+
 process_arguments() {
     if [ -z "$begin_key" -a -z "$restart_key" ] ; then
         echo_error "Either --begin=KEY or --restart=KEY must be set. See --help" ; exit 1
@@ -180,9 +188,18 @@ generate_temporary_key_file() {
     echo $$ > "${TEMP_KEY_FILE}"
 }
 
+run_artificial_wait_in_background() {
+    tail -f /dev/null
+}
+
 CMD_PID=
 run_command_in_background() {
     $@ &
+    CMD_PID="$!"
+    wait $CMD_PID
+    # In the case of command actually terminating
+    echo_info "\n$CMD [DONE]. Waiting for reruns..."
+    run_artificial_wait_in_background &
     CMD_PID="$!"
     wait $CMD_PID
 }
@@ -207,7 +224,6 @@ kill_process() {
 }
 
 terminate_cmd() {
-    echo "terminate_cmd: $KILL_METHOD"
     case $KILL_METHOD in
         term)
             kill -s TERM $CMD_PID
