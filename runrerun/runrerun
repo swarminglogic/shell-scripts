@@ -1,0 +1,280 @@
+#!/bin/sh
+
+show_usage_and_exit() {
+echo "Utilty for launching and subsequently re-launching by remote trigger
+This is particularly useful for restarting servers during development
+
+EXAMPLE USAGE:
+    # begin
+    $0 -b FOO ./foo.sh
+    # restart
+    $0 -r FOO
+
+USAGE (init):
+    $0 (--begin=KEY | -b KEY) <CMD..>
+    $0 (--begin=KEY | -b KEY) (--kill-method=METHOD | -k METHOD) <CMD..>
+
+USAGE (restart):
+    $0 (--restart=KEY | -r KEY)
+
+ARGUMENTS:
+    KEY         A user-defined key that must be shared between --begin and --restart stages
+                This is used to identify the process
+    METHOD      The method used to kill the running process
+                    term            - Sends a SIGTERM (default)
+                    kill            - Sends a SIGKILL
+                    int             - Sends a SIGINT
+                    hup             - Sends a SIGHUP
+                    double-int      - Sends two SIGINT, particularly useful for docker-compose
+                    nice-kill       - Sends a SIGTERM, SIGINT, SIGHUP and finally SIGKILL, in
+                                      that order, with a short 2 second delay between each.
+                                      Use this if you don't want to bother with figuring out which
+                                      would be best suited.
+
+OPTIONS
+    -h,--help       Show this help text
+    -v,--verbose    Output all commands
+"
+    exit ${1:-0}
+}
+
+parse_arguments() {
+    if [ $# -lt 1 ] ; then
+        show_usage_and_exit 0
+    fi
+    while test $# -gt 0; do
+        case "$1" in
+            -h|--help)
+                show_usage_and_exit 0 ;;
+            -v|--verbose)
+                set -x
+                shift ; verbose_flag=true
+                ;;
+            -b)
+                shift ; begin_key=$1 ; if [ $# -lt 1 ] ; then echo_error "-b KEY missing. See --help" ; exit 1 ; fi
+                shift
+                ;;
+            --begin=*)
+                begin_key=$(echo $1 | sed -e 's/^[^=]*=//g')
+                shift
+                ;;
+            -r)
+                shift ; restart_key=$1 ; if [ $# -lt 1 ] ; then echo_error "-r KEY missing. See --help" ; exit 1 ; fi
+                shift
+                ;;
+            --restart=*)
+                restart_key=$(echo $1 | sed -e 's/^[^=]*=//g')
+                shift
+                ;;
+            -k)
+                shift ; kill_method=$1 ; if [ $# -lt 1 ] ; then echo_error "-k METHOD missing. See --help" ; exit 1 ; fi
+                shift
+                ;;
+            --kill-method=*)
+                kill_method=$(echo $1 | sed -e 's/^[^=]*=//g')
+                shift
+                ;;
+            -*)
+                echo_error "Invalid flag: $1"
+                exit 1
+                ;;
+            *)
+                cmd="$cmd $1"
+                shift
+                ;;
+        esac
+    done
+}
+
+tty_available() {
+    [ -t 1 ]
+}
+
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+RESET='\033[0m'
+echo_error() {
+    if tty_available ; then
+        echo "${RED}ERROR${RESET} $@" 1>&2
+    else
+        echo "ERROR: $@" 1>&2
+    fi
+}
+
+process_arguments() {
+    if [ -z "$begin_key" -a -z "$restart_key" ] ; then
+        echo_error "Either --begin=KEY or --restart=KEY must be set. See --help" ; exit 1
+    fi
+    if [ ! -z "$begin_key" ] ; then
+        BEGIN_KEY=${begin_key}
+        if [ -z "$cmd" ] ; then
+            echo_error "CMD must be set when in --begin mode. See --help" ; exit 1
+        fi
+        CMD="$cmd"
+
+        # Default kill method
+        kill_method=${kill_method:-"term"}
+        if [ "$kill_method" != "term"  \
+          -a "$kill_method" != "kill" \
+          -a "$kill_method" != "int" \
+          -a "$kill_method" != "hup" \
+          -a "$kill_method" != "double-term" \
+          -a "$kill_method" != "nice-kill" ] ; then
+            echo_error "Invalid --kill-method=METHOD. See --help for possible values" ; exit 1
+        fi
+        KILL_METHOD="$kill_method"
+    fi
+    if [ ! -z "$restart_key" ] ; then
+        RESTART_KEY=${restart_key}
+        if [ ! -z "$kill_method" ] ; then
+            echo_error "--kill-method=METHOD has effect only in --begin mode." ; exit 1
+        fi
+    fi
+    KEY=${BEGIN_KEY:-${RESTART_KEY}}
+}
+
+trap 'cleanup_interrupted' INT TERM
+trap 'cleanup_common' EXIT
+cleanup_interrupted() {
+    trap - TERM
+    trap - INT
+    cleanup_common
+    kill -- -$$ >/dev/null 2>&1
+}
+
+cleanup_common() {
+    if [ ! -z "${BEGIN_KEY}" ] ; then
+        if [ -f "$(temporary_key_file)" ] ; then
+            rm -- $(temporary_key_file)
+        fi
+        if [ "$verbose_flag" = true ] ; then
+            set +x
+        fi
+        if [ ! -z "$CMD_PID" ] && is_process_alive $CMD_PID ; then
+            terminate_cmd
+        fi
+    fi
+}
+
+is_process_alive()  {
+    [ $(ps -p $1 | wc -l) -gt 1 ]
+}
+
+process_id() {
+    cat "$(temporary_key_file)"
+}
+
+temporary_key_file() {
+    echo "/tmp/reinit_tool_${KEY}"
+}
+
+generate_temporary_key_file() {
+    local TEMP_KEY_FILE="$(temporary_key_file)"
+    if [ -f ${TEMP_KEY_FILE} ] ; then
+        if is_process_alive $(process_id) ; then
+            echo_error "KEY already in use by active process. Terminating"
+        else
+            rm -- "${TEMP_KEY_FILE}"
+        fi
+    fi
+    echo $$ > "${TEMP_KEY_FILE}"
+}
+
+CMD_PID=
+run_command_in_background() {
+    $@ &
+    CMD_PID="$!"
+    echo $CMD_PID
+    wait $CMD_PID
+}
+
+# Quick return of process termination attempt
+# It waits at most 1 seconds to verify, and will break of immedately if
+# the process terminated.
+# Returns false if it failed, and true otherwise. Allowing for short cirquit
+# termination with OR-operator.
+kill_process() {
+    kill -s $1 $CMD_PID
+    sleep 0.1
+    for i in $(seq 0 9) ; do
+        if is_process_alive $CMD_PID ; then
+            sleep 0.1;
+        else
+            echo "Process killed using $1"
+            return 0;
+        fi
+    done
+    return 1;
+}
+
+terminate_cmd() {
+    echo "terminate_cmd: $KILL_METHOD"
+    case $KILL_METHOD in
+        term)
+            kill -s TERM $CMD_PID
+            ;;
+        kill)
+            kill -s KILL $CMD_PID
+            ;;
+        int)
+            kill -s INT  $CMD_PID
+            ;;
+        hup)
+            kill -s HUP  $CMD_PID
+            ;;
+        double-term)
+            kill -s INT $CMD_PID ; sleep 0.2
+            kill -s INT $CMD_PID
+            ;;
+        nice-kill)
+            kill_process TERM || \
+                kill_process INT || \
+                kill_process HUP || \
+                kill_process KILL
+            ;;
+    esac
+    # Waiting at most 4 seconds for the process to finish
+    for i in $(seq 0 39) ; do
+        if is_process_alive $CMD_PID ; then
+            sleep 0.1;
+        else
+            return 0;
+        fi
+    done
+    return 1
+}
+
+# This is the expected signal to receive when asked to restart the process
+trap 'restart_request' USR1
+restart_request() {
+    if terminate_cmd ; then
+        run_command_in_background "$CMD"
+    else
+        echo_error "Failed to terminate background process using $KILL_METHOD. Perhaps use a stronger method?"
+    fi
+}
+
+main() {
+    parse_arguments "$@"
+    process_arguments
+    if [ ! -z "$BEGIN_KEY" ] ; then
+        #   HANDLE INITIALIZATION
+        generate_temporary_key_file
+        run_command_in_background "$CMD"
+        :
+    elif [ ! -z "$RESTART_KEY" ] ; then
+        #   SEND RESTART SIGNAL TO INTITIALIZING PROCESS
+        if [ ! -f "$(temporary_key_file)" ] ; then
+            echo_error "Could not find matching process with KEY=$KEY Terminating" ; exit 1
+        fi
+        if ! is_process_alive $(process_id) ; then
+            echo_error "The initializing process, $(process_id), is not active. Terminating" ; exit 1
+        fi
+        echo "Sending restart signal to process with pid $(process_id)"
+        kill -s USR1 $(process_id)
+        :
+    fi
+}
+
+main "$@"
+
