@@ -184,7 +184,6 @@ CMD_PID=
 run_command_in_background() {
     $@ &
     CMD_PID="$!"
-    echo $CMD_PID
     wait $CMD_PID
 }
 
