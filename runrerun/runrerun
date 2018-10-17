@@ -171,7 +171,7 @@ process_arguments() {
           -a "$kill_method" != "kill" \
           -a "$kill_method" != "int" \
           -a "$kill_method" != "hup" \
-          -a "$kill_method" != "double-term" \
+          -a "$kill_method" != "double-int" \
           -a "$kill_method" != "nice-kill" ] ; then
             echo_error "Invalid --kill-method=METHOD. See --help for possible values" ; exit 1
         fi
@@ -317,7 +317,7 @@ terminate_cmd() {
         hup)
             kill -s HUP  $CMD_PID
             ;;
-        double-term)
+        double-int)
             kill -s INT $CMD_PID ; sleep 0.2
             kill -s INT $CMD_PID
             ;;
