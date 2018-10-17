@@ -28,6 +28,12 @@ EXAMPLE USAGE:
     $(self) -b FOO -k nice-kill ./bar.sh
     $(self) -r FOO
 
+    # Example: Sharing key with multiple concurrent jobs
+    $(self) --begin=FOO --attach ./bar.sh
+    $(self) --begin=FOO --attach ./bar.sh
+    $(self) --restart=FOO
+    # Note: --attach is only necessary on subsequent --begin, and is ignored otherwise
+
 USAGE (init):
     $(self) --begin=KEY <CMD..>
     $(self) (--begin=KEY | -b KEY) (--kill-method=METHOD | -k METHOD) <CMD..>
@@ -35,14 +41,18 @@ USAGE (init):
 USAGE (restart):
     $(self) (--restart=KEY | -r KEY)
 
-ARGUMENTS:
+OPTIONS:
     --begin=KEY,-b KEY      A user-defined key that must be shared between --begin and --restart
                             stages. This is used to identify the process
+    --attach,-a             Allows to reuse an active KEY. All threads sharing the key will receive
+                            the restart signal.
     --restart=KEY,-r KEY    Restarts a command started with --begin, with the same KEY
     --kill-method=METHOD,   Specifies termination method. Used only with --beging. See details below
                -k METHOD
     --                      All arguments passed after the double-hyphen is considered part of CMD
     <CMD>                   The command that is run on every re-run.
+    -h,--help               Show this help text
+    -v,--verbose            Output all commands
 
 METHOD:
           The method used to kill the running process
@@ -55,10 +65,6 @@ METHOD:
                                     that order, with a short 2 second delay between each.
                                     Use this if you don't want to bother with figuring out which
                                     would be best suited.
-
-OPTIONS
-    -h,--help       Show this help text
-    -v,--verbose    Output all commands
 "
     exit ${1:-0}
 }
@@ -98,6 +104,9 @@ parse_arguments() {
             --kill-method=*)
                 kill_method=$(echo $1 | sed -e 's/^[^=]*=//g')
                 shift
+                ;;
+            -a|--attach)
+                shift ; attach_flag=true
                 ;;
             -- )
                 pass_through=true
@@ -174,6 +183,7 @@ process_arguments() {
         fi
     fi
     KEY=${BEGIN_KEY:-${RESTART_KEY}}
+    TEMP_KEY_FILE="/tmp/reinit_tool_${KEY}"
 }
 
 trap 'cleanup_interrupted' INT TERM
@@ -185,10 +195,25 @@ cleanup_interrupted() {
     kill -- -$$ >/dev/null 2>&1
 }
 
+#$1: pid
+remove_pid_from_key_file() {
+    if grep "^$1\$" --quiet "${TEMP_KEY_FILE}" ; then
+        grep -v "^$1\$" "${TEMP_KEY_FILE}" > "${TEMP_KEY_FILE}.without"
+        mv "${TEMP_KEY_FILE}.without" "${TEMP_KEY_FILE}"
+    fi
+}
+
+delete_key_file_if_empty() {
+    if [ -f "$TEMP_KEY_FILE" ] && [ $(wc -l "$TEMP_KEY_FILE" | cut -d\  -f1) -eq 0 ] ; then
+        rm -- "${TEMP_KEY_FILE}"
+    fi
+}
+
 cleanup_common() {
     if [ "${BEGIN_KEY}" ] ; then
-        if [ -f "$(temporary_key_file)" ] ; then
-            rm -- $(temporary_key_file)
+        if [ -f "${TEMP_KEY_FILE}" ] ; then
+            remove_pid_from_key_file $$
+            delete_key_file_if_empty
         fi
         if [ "$verbose_flag" ] ; then
             set +x
@@ -199,28 +224,35 @@ cleanup_common() {
     fi
 }
 
+is_any_process_alive()  {
+    local any_ok=
+    for pid in $@; do
+        if is_process_alive $pid ; then
+            any_ok=true
+        fi
+    done
+    [ $any_ok ]
+}
+
 is_process_alive()  {
-    [ $(ps -p $1 | wc -l) -gt 1 ]
+   [ $(ps -p $1 | wc -l) -gt 1 ]
 }
 
-process_id() {
-    cat "$(temporary_key_file)"
-}
-
-temporary_key_file() {
-    echo "/tmp/reinit_tool_${KEY}"
+process_ids() {
+    cat "$TEMP_KEY_FILE"
 }
 
 generate_temporary_key_file() {
-    local TEMP_KEY_FILE="$(temporary_key_file)"
-    if [ -f ${TEMP_KEY_FILE} ] ; then
-        if is_process_alive $(process_id) ; then
-            echo_error "KEY already in use by active process. Terminating"
+    if [ -f "${TEMP_KEY_FILE}" ] ; then
+        if is_any_process_alive $(process_ids) ; then
+            if [ ! "$attach_flag" ] ; then
+                echo_error "KEY already in use by active process. Consider using --attach. Terminating" ; exit 1
+            fi
         else
             rm -- "${TEMP_KEY_FILE}"
         fi
     fi
-    echo $$ > "${TEMP_KEY_FILE}"
+    echo $$ >> "${TEMP_KEY_FILE}"
 }
 
 run_artificial_wait_in_background() {
@@ -326,15 +358,16 @@ main() {
         :
     elif [ "$RESTART_KEY" ] ; then
         #   SEND RESTART SIGNAL TO INTITIALIZING PROCESS
-        if [ ! -f "$(temporary_key_file)" ] ; then
+        if [ ! -f "${TEMP_KEY_FILE}" ] ; then
             echo_error "Could not find matching process with KEY=$KEY Terminating" ; exit 1
         fi
-        if ! is_process_alive $(process_id) ; then
+        if ! is_any_process_alive $(process_ids) ; then
             echo_error "The initializing process, $(process_id), is not active. Terminating" ; exit 1
         fi
-        echo "Sending restart signal to process with pid $(process_id)"
-        kill -s USR1 $(process_id)
-        :
+        for pid in "$(process_ids)" ; do
+            echo "Sending restart signal to process with pid: $pid"
+            kill -s USR1 ${pid}
+        done
     fi
 }
 
