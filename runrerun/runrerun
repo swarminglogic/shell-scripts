@@ -42,14 +42,20 @@ USAGE (restart):
     $(self) --restart=KEY
     $(self) -r KEY
 
+USAGE (stop):
+    $(self) --stop=KEY
+    $(self) -s KEY
+
 OPTIONS:
     --begin=KEY,-b KEY      A user-defined key that must be shared between --begin and --restart
-                            stages. This is used to identify the process
-    --attach,-a             Allows to reuse an active KEY. All threads sharing the key will receive
+                            stages. KEY is used to identify the process.
+    --attach,-a             Allows to reuse an active KEY. All jobs sharing the key will receive
                             the restart signal.
-    --restart=KEY,-r KEY    Restarts a command started with --begin, with the same KEY
+    --restart=KEY,-r KEY    Restarts a job started with --begin, with the same KEY
     --kill-method=METHOD,   Specifies termination method. Used only with --beging. See details below
                -k METHOD
+    --stop=KEY,-s KEY       Sends a stop signal to all the active jobs. It is an alternative to
+                            stopping the jobs individually (e.g. with CTRL-C)
     --                      All arguments passed after the double-hyphen is considered part of CMD
     <CMD>                   The command that is run on every re-run.
     -h,--help               Show this help text
@@ -109,6 +115,14 @@ parse_arguments() {
             -a|--attach)
                 shift ; attach_flag=true
                 ;;
+            -s)
+                shift ; stop_key=$1 ; if [ $# -lt 1 ] ; then echo_error "-s KEY missing. See --help" ; exit 1 ; fi
+                shift
+                ;;
+            --stop=*)
+                stop_key=$(echo $1 | sed -e 's/^[^=]*=//g')
+                shift
+                ;;
             -- )
                 pass_through=true
                 shift
@@ -154,10 +168,24 @@ echo_info() {
     echo "${GREEN}$@${RESET}"
 }
 
+process_arguments_check_kill_method_valid() {
+        if [ "$kill_method" ] ; then
+            echo_error "--kill-method=METHOD has effect only in --begin mode." ; exit 1
+        fi
+}
 process_arguments() {
-    if [ "$begin_key" -a "$restart_key" ] ; then
-        echo_error "Either --begin=KEY or --restart=KEY must be set. See --help" ; exit 1
+    # Check main flag
+    local n_main_flags=0
+    [ $begin_key ]   && n_main_flags=$((n_main_flags+1))
+    [ $restart_key ] && n_main_flags=$((n_main_flags+1))
+    [ $stop_key ]    && n_main_flags=$((n_main_flags+1))
+    if [ $n_main_flags -eq 0 ] ; then
+        echo_error "One of --begin,--restart,--stop is required" ; exit 1
+    elif [ $n_main_flags -gt 1 ] ; then
+        echo_error "Only one of --begin,--restart,--stop can used" ; exit 1
     fi
+    unset n_main_flags
+
     if [ "$begin_key" ] ; then
         BEGIN_KEY=${begin_key}
         if [ ! "$cmd" ] ; then
@@ -179,11 +207,13 @@ process_arguments() {
     fi
     if [ "$restart_key" ] ; then
         RESTART_KEY=${restart_key}
-        if [ "$kill_method" ] ; then
-            echo_error "--kill-method=METHOD has effect only in --begin mode." ; exit 1
-        fi
+        process_arguments_check_kill_method_valid
     fi
-    KEY=${BEGIN_KEY:-${RESTART_KEY}}
+    if [ "$stop_key" ] ; then
+        STOP_KEY=${stop_key}
+        process_arguments_check_kill_method_valid
+    fi
+    KEY=${BEGIN_KEY:-${RESTART_KEY:-${STOP_KEY}}}
     TEMP_KEY_FILE="/tmp/reinit_tool_${KEY}"
 }
 
@@ -200,13 +230,13 @@ cleanup_interrupted() {
 remove_pid_from_key_file() {
     if grep "^$1\$" --quiet "${TEMP_KEY_FILE}" ; then
         grep -v "^$1\$" "${TEMP_KEY_FILE}" > "${TEMP_KEY_FILE}.without"
-        mv "${TEMP_KEY_FILE}.without" "${TEMP_KEY_FILE}"
+        mv "${TEMP_KEY_FILE}.without" "${TEMP_KEY_FILE}" > /dev/null 2>&1
     fi
 }
 
 delete_key_file_if_empty() {
     if [ -f "$TEMP_KEY_FILE" ] && [ $(wc -l "$TEMP_KEY_FILE" | cut -d\  -f1) -eq 0 ] ; then
-        rm -- "${TEMP_KEY_FILE}"
+        rm -- "${TEMP_KEY_FILE}" 2>&1 > /dev/null
     fi
 }
 
@@ -349,6 +379,28 @@ restart_request() {
     fi
 }
 
+# This is the expected signal to receive when asked to stop the job itself
+trap 'stop_request' USR2
+stop_request() {
+    if ! terminate_cmd ; then
+        echo_error "Failed to terminate background process using $KILL_METHOD. Using nice-kill method"
+        KILL_METHOD='nice-kill'
+        if ! terminate_cmd ; then
+            echo_error "Still failed to terminate background process using $KILL_METHOD. Aborting and possibly leaving child thread hanging."
+        fi
+    fi
+    exit
+}
+
+verify_job_existance() {
+    if [ ! -f "${TEMP_KEY_FILE}" ] ; then
+        echo_error "Could not find matching process with KEY=$KEY Terminating" ; exit 1
+    fi
+    if ! is_any_process_alive $(process_ids) ; then
+        echo_error "The initializing process, $(process_id), is not active. Terminating" ; exit 1
+    fi
+}
+
 main() {
     parse_arguments "$@"
     process_arguments
@@ -358,16 +410,18 @@ main() {
         run_command_in_background "$CMD"
         :
     elif [ "$RESTART_KEY" ] ; then
-        #   SEND RESTART SIGNAL TO INTITIALIZING PROCESS
-        if [ ! -f "${TEMP_KEY_FILE}" ] ; then
-            echo_error "Could not find matching process with KEY=$KEY Terminating" ; exit 1
-        fi
-        if ! is_any_process_alive $(process_ids) ; then
-            echo_error "The initializing process, $(process_id), is not active. Terminating" ; exit 1
-        fi
+        #   SEND RESTART SIGNAL TO JOBS
+        verify_job_existance
         for pid in "$(process_ids)" ; do
-            echo "Sending restart signal to process with pid: $pid"
+            echo "Sending restart signal to job with pid: $pid"
             kill -s USR1 ${pid}
+        done
+    elif [ "$STOP_KEY" ] ; then
+        # SEND STOP SIGNAL TO JOBS
+        verify_job_existance
+        for pid in "$(process_ids)" ; do
+            echo "Sending stop signal to job with pid: $pid"
+            kill -s USR2 ${pid}
         done
     fi
 }
