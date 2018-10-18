@@ -218,7 +218,7 @@ process_arguments() {
         process_arguments_check_kill_method_valid
     fi
     KEY=${BEGIN_KEY:-${RESTART_KEY:-${STOP_KEY}}}
-    TEMP_KEY_FILE="/tmp/reinit_tool_${KEY}"
+    TEMP_KEY_FILE="/tmp/.runrerun_keyfile_${KEY}"
 }
 
 trap 'cleanup_interrupted' INT TERM
@@ -393,6 +393,10 @@ stop_request() {
             echo_error "Still failed to terminate background process using $KILL_METHOD. Aborting and possibly leaving child thread hanging."
         fi
     fi
+    if [ "$HAS_REACHED_END" ] ; then
+        native_echo -en '\033[2K\r'
+    fi
+    echo "${GREEN}Stop signal received${RESET}"
     exit
 }
 
