@@ -34,17 +34,21 @@ EXAMPLE USAGE:
     $(self) --restart=FOO
     # Note: --attach is only necessary on subsequent --begin, and is ignored otherwise
 
-USAGE (begin):
+USAGE:
+    $(self) (--begin|--restart|--stop)=KEY (OPTIONS) ([--] CMD)
+    $(self) (-b|-r|-s) <KEY> (OPTIONS) ([--] CMD)
+
+USAGE (--begin):
     $(self) --begin=KEY [--kill-method=METHOD] [--attach] [--] <CMD..>
-    $(self) -b KEY [-k METHOD] [-a] [--] <CMD..>
+    $(self) -b <KEY> [-k METHOD] [-a] [--] <CMD..>
 
-USAGE (restart):
+USAGE (--restart):
     $(self) --restart=KEY
-    $(self) -r KEY
+    $(self) -r <KEY>
 
-USAGE (stop):
+USAGE (--stop):
     $(self) --stop=KEY
-    $(self) -s KEY
+    $(self) -s <KEY>
 
 OPTIONS:
     --begin=KEY,-b KEY      A user-defined key that must be shared between --begin and --restart
