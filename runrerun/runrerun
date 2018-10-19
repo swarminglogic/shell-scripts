@@ -304,6 +304,16 @@ native_echo() {
     $(which echo) "$@"
 }
 
+# $1 return code
+create_waiting_output_line() {
+    RC=$1
+    if [ $RC -eq 0 ] ; then
+        echo -n "${GREEN}Waiting for reruns${RESET}"
+    else
+        echo -n "${RED}Waiting for reruns (exit code: $RC)${RESET}"
+    fi
+}
+
 HAS_REACHED_END=
 CMD_PID=
 run_command_in_background() {
@@ -318,8 +328,9 @@ run_command_in_background() {
     script --quiet --return -c "$@" /dev/null &
     CMD_PID="$!"
     wait $CMD_PID
+    CMD_RC=$?
     # In the case of command actually terminating
-    echo -n "${YELLOW}Waiting for reruns...${RESET}"
+    create_waiting_output_line $CMD_RC
     HAS_REACHED_END=true
     run_artificial_wait_in_background &
     CMD_PID="$!"
