@@ -308,7 +308,7 @@ run_command_in_background() {
     if [ "$HAS_REACHED_END" ] ; then
         native_echo -en '\033[2K\r'
     fi
-    $@ &
+    script --quiet --return -c "$@" /dev/null &
     CMD_PID="$!"
     wait $CMD_PID
     # In the case of command actually terminating
