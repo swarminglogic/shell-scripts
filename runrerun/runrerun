@@ -62,6 +62,7 @@ OPTIONS:
                             stopping the jobs individually (e.g. with CTRL-C)
     --                      All arguments passed after the double-hyphen is considered part of CMD
     <CMD>                   The command that is run on every re-run.
+    --clear-on-run          Clears the terminal window between each triggered execution
     -h,--help               Show this help text
     -v,--verbose            Output all commands
 
@@ -118,6 +119,9 @@ parse_arguments() {
                 ;;
             -a|--attach)
                 shift ; attach_flag=true
+                ;;
+            --clear-on-run)
+                shift ; clear_on_run_flag=true
                 ;;
             -s)
                 shift ; stop_key=$1 ; if [ $# -lt 1 ] ; then echo_error "-s KEY missing. See --help" ; exit 1 ; fi
@@ -307,6 +311,9 @@ run_command_in_background() {
     # line below, if has ever been printed
     if [ "$HAS_REACHED_END" ] ; then
         native_echo -en '\033[2K\r'
+    fi
+    if [ "$clear_on_run_flag" ] ; then
+        clear
     fi
     script --quiet --return -c "$@" /dev/null &
     CMD_PID="$!"
