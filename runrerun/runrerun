@@ -62,7 +62,7 @@ OPTIONS:
                             stopping the jobs individually (e.g. with CTRL-C)
     --                      All arguments passed after the double-hyphen is considered part of CMD
     <CMD>                   The command that is run on every re-run.
-    --clear-on-run          Clears the terminal window between each triggered execution
+    --clear                 Clears the terminal window between each triggered execution
     -h,--help               Show this help text
     -v,--verbose            Output all commands
 
@@ -120,7 +120,7 @@ parse_arguments() {
             -a|--attach)
                 shift ; attach_flag=true
                 ;;
-            --clear-on-run)
+            --clear)
                 shift ; clear_on_run_flag=true
                 ;;
             -s)
